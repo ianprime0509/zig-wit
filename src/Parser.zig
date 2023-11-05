@@ -20,23 +20,6 @@ allocator: Allocator,
 
 const Parser = @This();
 
-pub fn init(allocator: Allocator, source: []const u8, tokens: Token.List) Allocator.Error!Parser {
-    var string_pool = try StringPool.init(allocator);
-    errdefer string_pool.deinit(allocator);
-    return .{
-        .source = source,
-        .token_tags = tokens.items(.tag),
-        .token_spans = tokens.items(.span),
-        .token_index = @enumFromInt(1),
-        .nodes = .{},
-        .extra_data = .{},
-        .string_pool = string_pool,
-        .scratch = .{},
-        .errors = .{},
-        .allocator = allocator,
-    };
-}
-
 pub fn parseRoot(p: *Parser) error{ OutOfMemory, ParseError }!void {
     assert(p.nodes.len == 0);
     try p.nodes.append(p.allocator, .{ .tag = .root, .data = undefined });
@@ -66,9 +49,9 @@ fn parsePackageDecl(p: *Parser) !Node.Index {
     const version = switch (p.peek()) {
         .@"@" => version: {
             p.advance();
-            break :version try p.parseVersion();
+            break :version (try p.parseVersion()).toOptional();
         },
-        else => null,
+        else => .none,
     };
     _ = try p.expect(.@";");
 
@@ -172,11 +155,12 @@ fn encode(p: *Parser, value: anytype) !Node.ExtraIndex {
     inline for (fields) |field| {
         p.extra_data.appendAssumeCapacity(switch (field.type) {
             u32 => @field(value, field.name),
-            inline Token.Index, StringPool.Index, Node.Index => @intFromEnum(@field(value, field.name)),
-            inline ?Token.Index, ?StringPool.Index, ?Node.Index => if (@field(value, field.name)) |field_value|
-                @intFromEnum(field_value)
-            else
-                0,
+            inline Token.Index,
+            Node.Index,
+            Node.OptionalIndex,
+            StringPool.Index,
+            StringPool.OptionalIndex,
+            => @intFromEnum(@field(value, field.name)),
             else => @compileError("bad field type"),
         });
     }

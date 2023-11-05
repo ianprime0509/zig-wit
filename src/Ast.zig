@@ -21,7 +21,8 @@ pub const Token = struct {
     tag: Tag,
     span: Span,
 
-    pub const Index = enum(u32) { none = 0, _ };
+    pub const Index = enum(u32) { _ };
+
     pub const List = std.MultiArrayList(Token);
 
     pub const Tag = enum {
@@ -94,8 +95,16 @@ pub const Node = struct {
     tag: Tag,
     data: Data,
 
-    pub const Index = enum(u32) { none = 0, _ };
+    pub const Index = enum(u32) {
+        _,
+
+        pub fn toOptional(i: Index) OptionalIndex {
+            return @enumFromInt(@intFromEnum(i));
+        }
+    };
+    pub const OptionalIndex = enum(u32) { none = 0, _ };
     pub const ExtraIndex = enum(u32) { _ };
+
     pub const List = std.MultiArrayList(Node);
 
     pub const Tag = enum {
@@ -128,7 +137,7 @@ pub const Node = struct {
     pub const PackageId = struct {
         namespace: StringPool.Index,
         name: StringPool.Index,
-        version: ?StringPool.Index,
+        version: StringPool.OptionalIndex,
     };
 };
 
@@ -164,15 +173,12 @@ pub fn extraData(ast: Ast, comptime T: type) T {
     inline for (fields, 0..) |field, i| {
         @field(result, field.name) = switch (field.type) {
             u32 => ast.extra_data[i],
-            inline Token.Index, StringPool.Index, Node.Index => |Value| value: {
-                const value: Value = @enumFromInt(ast.extra_data[i]);
-                assert(value != .none);
-                break :value value;
-            },
-            inline ?Token.Index, ?StringPool.Index, ?Node.Index => |OptionalValue| value: {
-                const value: @typeInfo(OptionalValue).Optional.Child = @enumFromInt(ast.extra_data[i]);
-                break :value if (value != .none) value else null;
-            },
+            inline Token.Index,
+            Node.Index,
+            Node.OptionalIndex,
+            StringPool.Index,
+            StringPool.OptionalIndex,
+            => @enumFromInt(ast.extra_data[i]),
             else => @compileError("bad field type"),
         };
     }
@@ -182,7 +188,6 @@ pub fn extraData(ast: Ast, comptime T: type) T {
 pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Ast {
     var tokens: Token.List = .{};
     errdefer tokens.deinit(allocator);
-    try tokens.append(allocator, undefined);
     var tokenizer = Tokenizer.init(source);
     while (true) {
         const token = tokenizer.next();
@@ -190,7 +195,18 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Ast {
         if (token.tag == .eof) break;
     }
 
-    var parser = try Parser.init(allocator, source, tokens);
+    var parser: Parser = .{
+        .source = source,
+        .token_tags = tokens.items(.tag),
+        .token_spans = tokens.items(.span),
+        .token_index = @enumFromInt(0),
+        .nodes = .{},
+        .extra_data = .{},
+        .string_pool = .{},
+        .scratch = .{},
+        .errors = .{},
+        .allocator = allocator,
+    };
     errdefer parser.nodes.deinit(allocator);
     errdefer parser.extra_data.deinit(allocator);
     errdefer parser.string_pool.deinit(allocator);
