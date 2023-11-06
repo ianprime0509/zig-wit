@@ -20,7 +20,15 @@ pub const Index = enum(u32) {
         return @enumFromInt(@intFromEnum(i));
     }
 };
-pub const OptionalIndex = enum(u32) { none = std.math.maxInt(u32), _ };
+
+pub const OptionalIndex = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    pub fn unwrap(i: OptionalIndex) ?Index {
+        return if (i == .none) null else @enumFromInt(@intFromEnum(i));
+    }
+};
 
 pub fn deinit(sp: *StringPool, allocator: Allocator) void {
     sp.bytes.deinit(allocator);
@@ -28,8 +36,7 @@ pub fn deinit(sp: *StringPool, allocator: Allocator) void {
     sp.* = undefined;
 }
 
-pub fn data(sp: StringPool, index: Index) [:0]const u8 {
-    assert(index != .none);
+pub fn get(sp: StringPool, index: Index) [:0]const u8 {
     return mem.sliceTo(@as([*:0]const u8, @ptrCast(sp.bytes.items.ptr)) + @intFromEnum(index), 0);
 }
 

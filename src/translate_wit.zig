@@ -17,10 +17,7 @@ pub fn main() !void {
     var ast = try Ast.parse(allocator, source);
     defer ast.deinit(allocator);
 
-    const token_tags = ast.tokens.items(.tag)[1..];
-    for (token_tags) |tag| {
-        std.debug.print("{}\n", .{tag});
-    }
-
-    std.debug.print("{}\n", .{ast});
+    var stdout_buf = std.io.bufferedWriter(std.io.getStdOut().writer());
+    try ast.dump(stdout_buf.writer());
+    try stdout_buf.flush();
 }

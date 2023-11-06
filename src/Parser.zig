@@ -5,6 +5,7 @@ const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
 const Token = Ast.Token;
 const Node = Ast.Node;
+const ExtraIndex = Ast.ExtraIndex;
 const StringPool = @import("StringPool.zig");
 
 source: []const u8,
@@ -22,7 +23,11 @@ const Parser = @This();
 
 pub fn parseRoot(p: *Parser) error{ OutOfMemory, ParseError }!void {
     assert(p.nodes.len == 0);
-    try p.nodes.append(p.allocator, .{ .tag = .root, .data = undefined });
+    try p.nodes.append(p.allocator, .{
+        .tag = .root,
+        .main_token = undefined,
+        .data = undefined,
+    });
 
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
@@ -30,29 +35,25 @@ pub fn parseRoot(p: *Parser) error{ OutOfMemory, ParseError }!void {
         switch (p.peek()) {
             .eof => break,
             .package => try p.scratch.append(p.allocator, try p.parsePackageDecl()),
+            .use => try p.scratch.append(p.allocator, try p.parseTopLevelUse()),
+            .world => try p.scratch.append(p.allocator, try p.parseWorld()),
             else => return p.fail(.expected_top_level_item), // TODO
         }
     }
 
-    const root_start, const root_len = try p.encodeScratch(scratch_top);
+    const start, const len = try p.encodeScratch(scratch_top);
     p.nodes.items(.data)[0] = .{ .root = .{
-        .start = root_start,
-        .len = root_len,
+        .start = start,
+        .len = len,
     } };
 }
 
 fn parsePackageDecl(p: *Parser) !Node.Index {
     const package = try p.expect(.package);
-    const namespace = try p.intern(p.tokenSource(try p.expect(.identifier)));
+    const namespace = try p.intern(p.tokenSlice(try p.expect(.identifier)));
     _ = try p.expect(.@":");
-    const name = try p.intern(p.tokenSource(try p.expect(.identifier)));
-    const version = switch (p.peek()) {
-        .@"@" => version: {
-            p.advance();
-            break :version (try p.parseVersion()).toOptional();
-        },
-        else => .none,
-    };
+    const name = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    const version = try p.parseOptionalVersionSuffix();
     _ = try p.expect(.@";");
 
     const package_id = try p.encode(Node.PackageId{
@@ -62,25 +63,89 @@ fn parsePackageDecl(p: *Parser) !Node.Index {
     });
     return p.appendNode(.{
         .tag = .package_decl,
+        .main_token = package,
         .data = .{ .package_decl = .{
-            .package = package,
             .id = package_id,
         } },
     });
 }
 
-fn parseVersion(p: *Parser) !StringPool.Index {
+fn parseTopLevelUse(p: *Parser) !Node.Index {
+    const use = try p.expect(.use);
+    const namespace = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    _ = try p.expect(.@":");
+    const package = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    _ = try p.expect(.@"/");
+    const name = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    const version = try p.parseOptionalVersionSuffix();
+    const alias = switch (p.peek()) {
+        .as => alias: {
+            p.advance();
+            break :alias (try p.expect(.identifier)).toOptional();
+        },
+        else => .none,
+    };
+    _ = try p.expect(.@";");
+
+    const path = try p.encode(Node.UsePath{
+        .namespace = namespace,
+        .package = package,
+        .name = name,
+        .version = version,
+    });
+    return p.appendNode(.{
+        .tag = .top_level_use,
+        .main_token = use,
+        .data = .{ .top_level_use = .{
+            .path = path,
+            .alias = alias,
+        } },
+    });
+}
+
+fn parseWorld(p: *Parser) !Node.Index {
+    const world = try p.expect(.world);
+    _ = try p.expect(.identifier);
+    _ = try p.expect(.@"{");
+
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    while (true) {
+        switch (p.peek()) {
+            .@"}" => {
+                p.advance();
+                break;
+            },
+            else => return p.fail(.expected_world_item), // TODO
+        }
+    }
+
+    const start, const len = try p.encodeScratch(scratch_top);
+    return p.appendNode(.{
+        .tag = .world,
+        .main_token = world,
+        .data = .{ .world = .{
+            .start = start,
+            .len = len,
+        } },
+    });
+}
+
+fn parseOptionalVersionSuffix(p: *Parser) !StringPool.OptionalIndex {
+    if (p.peek() != .@"@") return .none;
+    p.advance();
+
     var version = std.ArrayList(u8).init(p.allocator);
     defer version.deinit();
 
     // TODO: better error reporting for invalid versions
-    try version.appendSlice(p.tokenSource(try p.expect(.integer)));
+    try version.appendSlice(p.tokenSlice(try p.expect(.integer)));
     _ = try p.expect(.@".");
     try version.append('.');
-    try version.appendSlice(p.tokenSource(try p.expect(.integer)));
+    try version.appendSlice(p.tokenSlice(try p.expect(.integer)));
     _ = try p.expect(.@".");
     try version.append('.');
-    try version.appendSlice(p.tokenSource(try p.expect(.integer)));
+    try version.appendSlice(p.tokenSlice(try p.expect(.integer)));
 
     var seen_prerelease = false;
     var seen_build = false;
@@ -102,18 +167,18 @@ fn parseVersion(p: *Parser) !StringPool.Index {
             else => break,
         }
         switch (p.peek()) {
-            .identifier, .integer => try version.appendSlice(p.tokenSource(p.token_index)),
+            .identifier, .integer => try version.appendSlice(p.tokenSlice(p.token_index)),
             else => return p.fail(.invalid_version),
         }
         while (p.peek() != .@".") {
             switch (p.peek()) {
-                .identifier, .integer => try version.appendSlice(p.tokenSource(p.token_index)),
+                .identifier, .integer => try version.appendSlice(p.tokenSlice(p.token_index)),
                 else => return p.fail(.invalid_version),
             }
         }
     }
 
-    return try p.intern(version.items);
+    return (try p.intern(version.items)).toOptional();
 }
 
 fn peek(p: *Parser) Token.Tag {
@@ -133,8 +198,10 @@ fn expect(p: *Parser, expected_tag: Token.Tag) !Token.Index {
     return index;
 }
 
-fn tokenSource(p: Parser, token_index: Token.Index) []const u8 {
-    const span = p.token_spans[@intFromEnum(token_index)];
+fn tokenSlice(p: Parser, index: Token.Index) []const u8 {
+    const tag = p.token_tags[@intFromEnum(index)];
+    if (tag.lexeme()) |lexeme| return lexeme;
+    const span = p.token_spans[@intFromEnum(index)];
     return p.source[span.start..][0..span.len];
 }
 
@@ -148,8 +215,8 @@ fn appendNode(p: *Parser, node: Node) !Node.Index {
     return index;
 }
 
-fn encode(p: *Parser, value: anytype) !Node.ExtraIndex {
-    const index: Node.ExtraIndex = @enumFromInt(@as(u32, @intCast(p.extra_data.items.len)));
+fn encode(p: *Parser, value: anytype) !ExtraIndex {
+    const index: ExtraIndex = @enumFromInt(@as(u32, @intCast(p.extra_data.items.len)));
     const fields = @typeInfo(@TypeOf(value)).Struct.fields;
     try p.extra_data.ensureUnusedCapacity(p.allocator, fields.len);
     inline for (fields) |field| {
@@ -167,8 +234,8 @@ fn encode(p: *Parser, value: anytype) !Node.ExtraIndex {
     return index;
 }
 
-fn encodeScratch(p: *Parser, start: usize) !struct { Node.ExtraIndex, u32 } {
-    const index: Node.ExtraIndex = @enumFromInt(@as(u32, @intCast(p.extra_data.items.len)));
+fn encodeScratch(p: *Parser, start: usize) !struct { ExtraIndex, u32 } {
+    const index: ExtraIndex = @enumFromInt(@as(u32, @intCast(p.extra_data.items.len)));
     const scratch_items = p.scratch.items[start..];
     try p.extra_data.appendSlice(p.allocator, @ptrCast(p.scratch.items[start..]));
     return .{ index, @intCast(scratch_items.len) };
