@@ -71,11 +71,17 @@ fn parsePackageDecl(p: *Parser) !Node.Index {
 
 fn parseTopLevelUse(p: *Parser) !Node.Index {
     const use = try p.expect(.use);
-    const namespace = try p.expect(.identifier);
-    _ = try p.expect(.@":");
-    const package = try p.expect(.identifier);
-    _ = try p.expect(.@"/");
-    const name = try p.expect(.identifier);
+    const namespace, const package, const name = parts: {
+        const initial = try p.expect(.identifier);
+        if (p.peek() != .@":") {
+            break :parts .{ .none, .none, initial };
+        }
+        p.advance();
+        const package = try p.expect(.identifier);
+        _ = try p.expect(.@"/");
+        const name = try p.expect(.identifier);
+        break :parts .{ initial.toOptional(), package.toOptional(), name };
+    };
     const version, const version_len = try p.parseOptionalVersionSuffix();
     const alias = switch (p.peek()) {
         .as => alias: {

@@ -199,9 +199,10 @@ pub const Node = struct {
         version_len: u32,
     };
 
+    /// Note: `(namespace == .none) == (package == .none)`
     pub const UsePath = struct {
-        namespace: Token.Index,
-        package: Token.Index,
+        namespace: Token.OptionalIndex,
+        package: Token.OptionalIndex,
         name: Token.Index,
         version: Token.OptionalIndex,
         version_len: u32,
@@ -335,10 +336,11 @@ pub const full = struct {
         version_len: u32,
     };
 
+    /// Note: `(namespace == null) == (package == null)`
     pub const TopLevelUse = struct {
         use_token: Token.Index,
-        namespace: Token.Index,
-        package: Token.Index,
+        namespace: ?Token.Index,
+        package: ?Token.Index,
         name: Token.Index,
         version: ?Token.Index,
         version_len: u32,
@@ -378,8 +380,8 @@ pub fn fullTopLevelUse(ast: Ast, index: Node.Index) full.TopLevelUse {
     const path = ast.extraData(Node.UsePath, data.path);
     return .{
         .use_token = ast.nodes.items(.main_token)[@intFromEnum(index)],
-        .namespace = path.namespace,
-        .package = path.package,
+        .namespace = path.namespace.unwrap(),
+        .package = path.package.unwrap(),
         .name = path.name,
         .version = path.version.unwrap(),
         .version_len = path.version_len,
@@ -436,11 +438,14 @@ fn dumpNode(ast: Ast, node: Node.Index, indent: u32, writer: anytype) !void {
         },
         .top_level_use => {
             const top_level_use = ast.fullTopLevelUse(node);
-            try writer.print("use {s}:{s}/{s}", .{
-                ast.tokenSlice(top_level_use.namespace),
-                ast.tokenSlice(top_level_use.package),
-                ast.tokenSlice(top_level_use.name),
-            });
+            try writer.writeAll("use ");
+            if (top_level_use.namespace) |namespace| {
+                try writer.print("{s}:{s}/", .{
+                    ast.tokenSlice(namespace),
+                    ast.tokenSlice(top_level_use.package.?),
+                });
+            }
+            try writer.writeAll(ast.tokenSlice(top_level_use.name));
             if (top_level_use.version) |version| {
                 try writer.writeByte('@');
                 try ast.dumpTokens(version, top_level_use.version_len, writer);

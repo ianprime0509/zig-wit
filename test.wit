@@ -2,6 +2,7 @@
 package example:pkg@1.0.0;
 
 use wasi:io/output-stream;
+use random;
 
 world Test {
 
