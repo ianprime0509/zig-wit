@@ -11,6 +11,7 @@ pub fn init(source: []const u8) Tokenizer {
 }
 
 pub fn next(t: *Tokenizer) Token {
+    // TODO: escape identifier with %
     var state: enum {
         start,
         @"/",
@@ -49,6 +50,10 @@ pub fn next(t: *Tokenizer) Token {
             .start => switch (c) {
                 ' ', '\n', '\r', '\t' => start += c_len,
                 '/' => state = .@"/",
+                '_' => {
+                    t.index += c_len;
+                    break ._;
+                },
                 '=' => {
                     t.index += c_len;
                     break .@"=";

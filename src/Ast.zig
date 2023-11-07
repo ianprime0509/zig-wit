@@ -62,6 +62,26 @@ pub const Token = struct {
         include,
         as,
 
+        @"_",
+        u8,
+        u16,
+        u32,
+        u64,
+        s8,
+        s16,
+        s32,
+        s64,
+        float32,
+        float64,
+        char,
+        bool,
+        string,
+        tuple,
+        list,
+        option,
+        result,
+        borrow,
+
         @"=",
         @",",
         @":",
@@ -97,6 +117,24 @@ pub const Token = struct {
             .{ "package", .package },
             .{ "include", .include },
             .{ "as", .as },
+            .{ "u8", .u8 },
+            .{ "u16", .u16 },
+            .{ "u32", .u32 },
+            .{ "u64", .u64 },
+            .{ "s8", .s8 },
+            .{ "s16", .s16 },
+            .{ "s32", .s32 },
+            .{ "s64", .s64 },
+            .{ "float32", .float32 },
+            .{ "float64", .float64 },
+            .{ "char", .char },
+            .{ "bool", .bool },
+            .{ "string", .string },
+            .{ "tuple", .tuple },
+            .{ "list", .list },
+            .{ "option", .option },
+            .{ "result", .result },
+            .{ "borrow", .borrow },
         });
 
         pub fn lexeme(tag: Tag) ?[]const u8 {
@@ -139,12 +177,21 @@ pub const Node = struct {
             return @enumFromInt(@intFromEnum(i));
         }
     };
-    pub const OptionalIndex = enum(u32) { none = 0, _ };
+
+    pub const OptionalIndex = enum(u32) {
+        none = 0,
+        _,
+
+        pub fn unwrap(i: OptionalIndex) ?Index {
+            return if (i == .none) null else @enumFromInt(@intFromEnum(i));
+        }
+    };
 
     pub const List = std.MultiArrayList(Node);
 
     pub const Tag = enum {
-        /// `data` is `root`.
+        /// `data` is `container`.
+        /// `main_token` is undefined.
         root,
         /// `data` is `package_decl`.
         /// `main_token` is the `package` token.
@@ -152,21 +199,77 @@ pub const Node = struct {
         /// `data` is `top_level_use`.
         /// `main_token` is the `use` token.
         top_level_use,
-        /// `data` is `world`.
+        /// `data` is `container`.
         /// `main_token` is the `world` token.
         world,
+        /// `data` is `container`.
+        /// `main_token` is the `interface` token.
+        interface,
+        /// `data` is `type_reference`.
+        /// `main_token` is the `type` token.
+        type_alias,
+        /// `data` is `container`.
+        /// `main_token` is the `record` token.
+        record,
+        /// `data` is `container`.
+        /// `main_token` is the `flags` token.
+        flags,
+        /// `data` is `container`.
+        /// `main_token` is the `variant` token.
+        variant,
+        /// `data` is `container`.
+        /// `main_token` is the `enum` token.
+        @"enum",
+        /// `data` is `container`.
+        /// `main_token` is the `resource` token.
+        resource,
+        /// An untyped field or case (member of a flags or enum, or an untyped variant case).
+        /// `data` is `none`.
+        /// `main_token` is the field or case name.
+        untyped_field,
+        /// A typed field or case (member of a record or variant).
+        /// `data` is `type_reference`.
+        /// `main_token` is the field or case name.
+        typed_field,
+        /// A simple type (built-in or user-defined referenced by name).
+        /// `data` is `none`.
+        /// `main_token` is the type name or keyword.
+        type_simple,
+        /// A tuple type.
+        /// `data` is `container`.
+        /// `main_token` is the `tuple` token.
+        type_tuple,
+        /// A list type.
+        /// `data` is `unary_type`.
+        /// `main_token` is the `list` token.
+        type_list,
+        /// A option type.
+        /// `data` is `unary_type`.
+        /// `main_token` is the `option` token.
+        type_option,
+        /// A result type.
+        /// `data` is `result_type`.
+        /// `main_token` is the `result` token.
+        type_result,
+        /// A borrowed type.
+        /// `data` is `unary_type`.
+        /// `main_token` is the `borrow` token.
+        type_borrow,
     };
 
     pub const Data = union {
-        root: Root,
+        none: void,
+        container: Container,
         package_decl: PackageDecl,
         top_level_use: TopLevelUse,
-        world: World,
+        type_reference: TypeReference,
+        unary_type: UnaryType,
+        result_type: ResultType,
 
-        pub const Root = struct {
-            /// The start of contained decls.
+        pub const Container = struct {
+            /// The start of contained items.
             start: ExtraIndex,
-            /// The number of contained decls.
+            /// The number of contained items.
             len: u32,
         };
 
@@ -184,11 +287,21 @@ pub const Node = struct {
             alias: Token.OptionalIndex,
         };
 
-        pub const World = struct {
-            /// The start of contained items.
-            start: ExtraIndex,
-            /// The number of contained items.
-            len: u32,
+        pub const TypeReference = struct {
+            /// The referenced type.
+            type: Node.Index,
+        };
+
+        pub const UnaryType = struct {
+            /// The child type.
+            child_type: Node.Index,
+        };
+
+        pub const ResultType = struct {
+            /// The `ok` child type.
+            ok_type: Node.OptionalIndex,
+            /// The `err` child type.
+            err_type: Node.OptionalIndex,
         };
     };
 
@@ -236,7 +349,7 @@ pub fn extraData(ast: Ast, comptime T: type, index: ExtraIndex) T {
     return result;
 }
 
-fn extraDataNodes(ast: Ast, start: ExtraIndex, len: u32) []const Node.Index {
+pub fn extraDataNodes(ast: Ast, start: ExtraIndex, len: u32) []const Node.Index {
     return @ptrCast(ast.extra_data[@intFromEnum(start)..][0..len]);
 }
 
@@ -298,6 +411,13 @@ pub const Error = struct {
     pub const Tag = enum {
         expected_top_level_item,
         expected_world_item,
+        expected_interface_item,
+        expected_record_field,
+        expected_flags_field,
+        expected_variant_case,
+        expected_enum_case,
+        expected_resource_method,
+        expected_type,
         invalid_version, // TODO: refine this
 
         /// `expected_tag` is populated.
@@ -315,90 +435,32 @@ pub fn renderError(ast: Ast, @"error": Error, writer: anytype) @TypeOf(writer).E
         .expected_world_item => writer.print("expected world item, found {s}", .{
             token_tags[@intFromEnum(@"error".token)].symbol(),
         }),
-        .invalid_version => writer.writeAll("invalid version"),
-        .expected_token => writer.print("expected {s}, found {s}", .{
-            token_tags[@intFromEnum(@"error".extra.expected_tag)].symbol(),
+        .expected_interface_item => writer.print("expected interface item, found {s}", .{
             token_tags[@intFromEnum(@"error".token)].symbol(),
         }),
-    };
-}
-
-pub const full = struct {
-    pub const Root = struct {
-        items: []const Node.Index,
-    };
-
-    pub const PackageDecl = struct {
-        package_token: Token.Index,
-        namespace: Token.Index,
-        name: Token.Index,
-        version: ?Token.Index,
-        version_len: u32,
-    };
-
-    /// Note: `(namespace == null) == (package == null)`
-    pub const TopLevelUse = struct {
-        use_token: Token.Index,
-        namespace: ?Token.Index,
-        package: ?Token.Index,
-        name: Token.Index,
-        version: ?Token.Index,
-        version_len: u32,
-        alias: ?Token.Index,
-    };
-
-    pub const World = struct {
-        world_token: Token.Index,
-        name: Token.Index,
-        items: []const Node.Index,
-    };
-};
-
-pub fn fullRoot(ast: Ast) full.Root {
-    const root = ast.nodes.items(.data)[0].root;
-    return .{
-        .items = ast.extraDataNodes(root.start, root.len),
-    };
-}
-
-pub fn fullPackageDecl(ast: Ast, index: Node.Index) full.PackageDecl {
-    assert(ast.nodes.items(.tag)[@intFromEnum(index)] == .package_decl);
-    const data = ast.nodes.items(.data)[@intFromEnum(index)].package_decl;
-    const id = ast.extraData(Node.PackageId, data.id);
-    return .{
-        .package_token = ast.nodes.items(.main_token)[@intFromEnum(index)],
-        .namespace = id.namespace,
-        .name = id.name,
-        .version = id.version.unwrap(),
-        .version_len = id.version_len,
-    };
-}
-
-pub fn fullTopLevelUse(ast: Ast, index: Node.Index) full.TopLevelUse {
-    assert(ast.nodes.items(.tag)[@intFromEnum(index)] == .top_level_use);
-    const data = ast.nodes.items(.data)[@intFromEnum(index)].top_level_use;
-    const path = ast.extraData(Node.UsePath, data.path);
-    return .{
-        .use_token = ast.nodes.items(.main_token)[@intFromEnum(index)],
-        .namespace = path.namespace.unwrap(),
-        .package = path.package.unwrap(),
-        .name = path.name,
-        .version = path.version.unwrap(),
-        .version_len = path.version_len,
-        .alias = data.alias.unwrap(),
-    };
-}
-
-pub fn fullWorld(ast: Ast, index: Node.Index) full.World {
-    assert(ast.nodes.items(.tag)[@intFromEnum(index)] == .world);
-    const data = ast.nodes.items(.data)[@intFromEnum(index)].world;
-    const world_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
-    const name: Token.Index = @enumFromInt(@intFromEnum(world_token) + 1);
-    assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
-    return .{
-        .world_token = world_token,
-        .name = name,
-        .items = ast.extraDataNodes(data.start, data.len),
+        .expected_record_field => writer.print("expected record field, found {s}", .{
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
+        .expected_flags_field => writer.print("expected flags field, found {s}", .{
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
+        .expected_variant_case => writer.print("expected variant case, found {s}", .{
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
+        .expected_enum_case => writer.print("expected enum case, found {s}", .{
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
+        .expected_resource_method => writer.print("expected resource method, found {s}", .{
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
+        .expected_type => writer.print("expected type, found {s}", .{
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
+        .invalid_version => writer.writeAll("invalid version"),
+        .expected_token => writer.print("expected {s}, found {s}", .{
+            @"error".extra.expected_tag.symbol(),
+            token_tags[@intFromEnum(@"error".token)].symbol(),
+        }),
     };
 }
 
@@ -411,59 +473,154 @@ pub fn dump(ast: Ast, writer: anytype) @TypeOf(writer).Error!void {
         }
         return;
     }
-    const root = ast.fullRoot();
-    for (root.items) |item| {
-        try ast.dumpNode(item, 0, writer);
+
+    assert(ast.nodes.items(.tag)[0] == .root);
+    const root = ast.nodes.items(.data)[0].container;
+    for (ast.extraDataNodes(root.start, root.len)) |item_index| {
+        try ast.dumpNode(item_index, 0, writer);
     }
 }
 
-fn dumpNode(ast: Ast, node: Node.Index, indent: u32, writer: anytype) !void {
+fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(writer).Error!void {
     try writer.writeByteNTimes(' ', indent);
     const node_tags = ast.nodes.items(.tag);
     const node_datas = ast.nodes.items(.data);
-    _ = node_datas;
-    switch (node_tags[@intFromEnum(node)]) {
+    switch (node_tags[@intFromEnum(index)]) {
         .root => unreachable,
         .package_decl => {
-            const package_decl = ast.fullPackageDecl(node);
+            const package_decl = node_datas[@intFromEnum(index)].package_decl;
+            const id = ast.extraData(Node.PackageId, package_decl.id);
             try writer.print("package {s}:{s}", .{
-                ast.tokenSlice(package_decl.namespace),
-                ast.tokenSlice(package_decl.name),
+                ast.tokenSlice(id.namespace),
+                ast.tokenSlice(id.name),
             });
-            if (package_decl.version) |version| {
+            if (id.version.unwrap()) |version| {
                 try writer.writeByte('@');
-                try ast.dumpTokens(version, package_decl.version_len, writer);
+                try ast.dumpTokens(version, id.version_len, writer);
             }
             try writer.writeByte('\n');
         },
         .top_level_use => {
-            const top_level_use = ast.fullTopLevelUse(node);
+            const top_level_use = node_datas[@intFromEnum(index)].top_level_use;
+            const path = ast.extraData(Node.UsePath, top_level_use.path);
             try writer.writeAll("use ");
-            if (top_level_use.namespace) |namespace| {
+            if (path.namespace.unwrap()) |namespace| {
                 try writer.print("{s}:{s}/", .{
                     ast.tokenSlice(namespace),
-                    ast.tokenSlice(top_level_use.package.?),
+                    ast.tokenSlice(path.package.unwrap().?),
                 });
             }
-            try writer.writeAll(ast.tokenSlice(top_level_use.name));
-            if (top_level_use.version) |version| {
+            try writer.writeAll(ast.tokenSlice(path.name));
+            if (path.version.unwrap()) |version| {
                 try writer.writeByte('@');
-                try ast.dumpTokens(version, top_level_use.version_len, writer);
+                try ast.dumpTokens(version, path.version_len, writer);
             }
-            if (top_level_use.alias) |alias| {
+            if (top_level_use.alias.unwrap()) |alias| {
                 try writer.print(" as {s}", .{ast.tokenSlice(alias)});
             }
             try writer.writeByte('\n');
         },
-        .world => {
-            const world = ast.fullWorld(node);
-            try writer.print("world {s}\n", .{
-                ast.tokenSlice(world.name),
-            });
-            for (world.items) |item| {
-                try ast.dumpNode(item, indent + 2, writer);
-            }
+        .world,
+        .interface,
+        .record,
+        .flags,
+        .variant,
+        .@"enum",
+        .resource,
+        => |tag| try ast.dumpContainer(@tagName(tag), index, indent, writer),
+        .type_alias => {
+            try writer.writeAll("type ");
+            const type_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            const name: Token.Index = @enumFromInt(@intFromEnum(type_token) + 1);
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": ");
+
+            const type_reference = ast.nodes.items(.data)[@intFromEnum(index)].type_reference;
+            try ast.dumpNode(type_reference.type, 0, writer);
+            try writer.writeByte('\n');
         },
+        .untyped_field => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeByte('\n');
+        },
+        .typed_field => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": ");
+
+            const type_reference = ast.nodes.items(.data)[@intFromEnum(index)].type_reference;
+            try ast.dumpNode(type_reference.type, 0, writer);
+            try writer.writeByte('\n');
+        },
+        .type_simple => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            try writer.writeAll(ast.tokenSlice(name));
+        },
+        .type_tuple => {
+            try writer.writeAll("tuple<");
+            const container = ast.nodes.items(.data)[@intFromEnum(index)].container;
+            for (ast.extraDataNodes(container.start, container.len), 0..) |item_index, i| {
+                if (i > 0) try writer.writeAll(", ");
+                try ast.dumpNode(item_index, 0, writer);
+            }
+            try writer.writeByte('>');
+        },
+        .type_list => {
+            try writer.writeAll("list<");
+            const unary_type = ast.nodes.items(.data)[@intFromEnum(index)].unary_type;
+            try ast.dumpNode(unary_type.child_type, 0, writer);
+            try writer.writeByte('>');
+        },
+        .type_option => {
+            try writer.writeAll("option<");
+            const unary_type = ast.nodes.items(.data)[@intFromEnum(index)].unary_type;
+            try ast.dumpNode(unary_type.child_type, 0, writer);
+            try writer.writeByte('>');
+        },
+        .type_result => {
+            const result_type = ast.nodes.items(.data)[@intFromEnum(index)].result_type;
+            if (result_type.ok_type == .none and result_type.err_type == .none) {
+                try writer.writeAll("result");
+                return;
+            }
+
+            try writer.writeAll("result<");
+            if (result_type.ok_type.unwrap()) |ok_type| {
+                try ast.dumpNode(ok_type, 0, writer);
+            } else {
+                try writer.writeByte('_');
+            }
+            if (result_type.err_type.unwrap()) |err_type| {
+                try writer.writeAll(", ");
+                try ast.dumpNode(err_type, 0, writer);
+            }
+            try writer.writeByte('>');
+        },
+        .type_borrow => {
+            try writer.writeAll("borrow<");
+            const unary_type = ast.nodes.items(.data)[@intFromEnum(index)].unary_type;
+            try ast.dumpNode(unary_type.child_type, 0, writer);
+            try writer.writeByte('>');
+        },
+    }
+}
+
+fn dumpContainer(ast: Ast, @"type": []const u8, index: Node.Index, indent: u32, writer: anytype) @TypeOf(writer).Error!void {
+    try writer.writeAll(@"type");
+    try writer.writeByte(' ');
+    const type_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+    const name: Token.Index = @enumFromInt(@intFromEnum(type_token) + 1);
+    assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+    try writer.writeAll(ast.tokenSlice(name));
+    try writer.writeByte('\n');
+
+    const container = ast.nodes.items(.data)[@intFromEnum(index)].container;
+    for (ast.extraDataNodes(container.start, container.len)) |item_index| {
+        try ast.dumpNode(item_index, indent + 2, writer);
     }
 }
 

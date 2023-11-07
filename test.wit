@@ -4,6 +4,18 @@ package example:pkg@1.0.0;
 use wasi:io/output-stream;
 use random;
 
-world Test {
+world test {
 
+}
+
+interface my-interface {
+    type my-result = result<u32, stuff>;
+
+    resource my-resource;
+
+    enum stuff {
+        one,
+        two,
+        three,
+    }
 }
