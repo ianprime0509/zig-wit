@@ -3,7 +3,6 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const Parser = @import("Parser.zig");
-const StringPool = @import("StringPool.zig");
 const Tokenizer = @import("Tokenizer.zig");
 
 source: []const u8,
@@ -11,7 +10,6 @@ source: []const u8,
 tokens: Token.List.Slice,
 nodes: Node.List.Slice,
 extra_data: []u32,
-string_pool: StringPool,
 
 errors: []Error,
 
@@ -195,16 +193,18 @@ pub const Node = struct {
     };
 
     pub const PackageId = struct {
-        namespace: StringPool.Index,
-        name: StringPool.Index,
-        version: StringPool.OptionalIndex,
+        namespace: Token.Index,
+        name: Token.Index,
+        version: Token.OptionalIndex,
+        version_len: u32,
     };
 
     pub const UsePath = struct {
-        namespace: StringPool.Index,
-        package: StringPool.Index,
-        name: StringPool.Index,
-        version: StringPool.OptionalIndex,
+        namespace: Token.Index,
+        package: Token.Index,
+        name: Token.Index,
+        version: Token.OptionalIndex,
+        version_len: u32,
     };
 };
 
@@ -214,7 +214,6 @@ pub fn deinit(ast: *Ast, allocator: Allocator) void {
     ast.tokens.deinit(allocator);
     ast.nodes.deinit(allocator);
     allocator.free(ast.extra_data);
-    ast.string_pool.deinit(allocator);
     allocator.free(ast.errors);
     ast.* = undefined;
 }
@@ -226,10 +225,9 @@ pub fn extraData(ast: Ast, comptime T: type, index: ExtraIndex) T {
         @field(result, field.name) = switch (field.type) {
             u32 => ast.extra_data[@intFromEnum(index) + i],
             inline Token.Index,
+            Token.OptionalIndex,
             Node.Index,
             Node.OptionalIndex,
-            StringPool.Index,
-            StringPool.OptionalIndex,
             => @enumFromInt(ast.extra_data[@intFromEnum(index) + i]),
             else => @compileError("bad field type"),
         };
@@ -258,14 +256,12 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Ast {
         .token_index = @enumFromInt(0),
         .nodes = .{},
         .extra_data = .{},
-        .string_pool = .{},
         .scratch = .{},
         .errors = .{},
         .allocator = allocator,
     };
     errdefer parser.nodes.deinit(allocator);
     errdefer parser.extra_data.deinit(allocator);
-    errdefer parser.string_pool.deinit(allocator);
     defer parser.scratch.deinit(allocator);
     errdefer parser.errors.deinit(allocator);
 
@@ -279,7 +275,6 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Ast {
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
         .extra_data = try parser.extra_data.toOwnedSlice(allocator),
-        .string_pool = parser.string_pool,
         .errors = try parser.errors.toOwnedSlice(allocator),
     };
 }
@@ -334,17 +329,19 @@ pub const full = struct {
 
     pub const PackageDecl = struct {
         package_token: Token.Index,
-        namespace: StringPool.Index,
-        name: StringPool.Index,
-        version: ?StringPool.Index,
+        namespace: Token.Index,
+        name: Token.Index,
+        version: ?Token.Index,
+        version_len: u32,
     };
 
     pub const TopLevelUse = struct {
         use_token: Token.Index,
-        namespace: StringPool.Index,
-        package: StringPool.Index,
-        name: StringPool.Index,
-        version: ?StringPool.Index,
+        namespace: Token.Index,
+        package: Token.Index,
+        name: Token.Index,
+        version: ?Token.Index,
+        version_len: u32,
         alias: ?Token.Index,
     };
 
@@ -371,6 +368,7 @@ pub fn fullPackageDecl(ast: Ast, index: Node.Index) full.PackageDecl {
         .namespace = id.namespace,
         .name = id.name,
         .version = id.version.unwrap(),
+        .version_len = id.version_len,
     };
 }
 
@@ -384,6 +382,7 @@ pub fn fullTopLevelUse(ast: Ast, index: Node.Index) full.TopLevelUse {
         .package = path.package,
         .name = path.name,
         .version = path.version.unwrap(),
+        .version_len = path.version_len,
         .alias = data.alias.unwrap(),
     };
 }
@@ -416,7 +415,7 @@ pub fn dump(ast: Ast, writer: anytype) @TypeOf(writer).Error!void {
     }
 }
 
-fn dumpNode(ast: Ast, node: Node.Index, indent: u32, writer: anytype) @TypeOf(writer).Error!void {
+fn dumpNode(ast: Ast, node: Node.Index, indent: u32, writer: anytype) !void {
     try writer.writeByteNTimes(' ', indent);
     const node_tags = ast.nodes.items(.tag);
     const node_datas = ast.nodes.items(.data);
@@ -426,23 +425,25 @@ fn dumpNode(ast: Ast, node: Node.Index, indent: u32, writer: anytype) @TypeOf(wr
         .package_decl => {
             const package_decl = ast.fullPackageDecl(node);
             try writer.print("package {s}:{s}", .{
-                ast.string_pool.get(package_decl.namespace),
-                ast.string_pool.get(package_decl.name),
+                ast.tokenSlice(package_decl.namespace),
+                ast.tokenSlice(package_decl.name),
             });
             if (package_decl.version) |version| {
-                try writer.print("@{s}", .{ast.string_pool.get(version)});
+                try writer.writeByte('@');
+                try ast.dumpTokens(version, package_decl.version_len, writer);
             }
             try writer.writeByte('\n');
         },
         .top_level_use => {
             const top_level_use = ast.fullTopLevelUse(node);
             try writer.print("use {s}:{s}/{s}", .{
-                ast.string_pool.get(top_level_use.namespace),
-                ast.string_pool.get(top_level_use.package),
-                ast.string_pool.get(top_level_use.name),
+                ast.tokenSlice(top_level_use.namespace),
+                ast.tokenSlice(top_level_use.package),
+                ast.tokenSlice(top_level_use.name),
             });
             if (top_level_use.version) |version| {
-                try writer.print("@{s}", .{ast.string_pool.get(version)});
+                try writer.writeByte('@');
+                try ast.dumpTokens(version, top_level_use.version_len, writer);
             }
             if (top_level_use.alias) |alias| {
                 try writer.print(" as {s}", .{ast.tokenSlice(alias)});
@@ -458,5 +459,12 @@ fn dumpNode(ast: Ast, node: Node.Index, indent: u32, writer: anytype) @TypeOf(wr
                 try ast.dumpNode(item, indent + 2, writer);
             }
         },
+    }
+}
+
+fn dumpTokens(ast: Ast, index: Token.Index, len: u32, writer: anytype) !void {
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        try writer.writeAll(ast.tokenSlice(@enumFromInt(@intFromEnum(index) + i)));
     }
 }

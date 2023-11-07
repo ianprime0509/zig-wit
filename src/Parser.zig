@@ -6,7 +6,6 @@ const Ast = @import("Ast.zig");
 const Token = Ast.Token;
 const Node = Ast.Node;
 const ExtraIndex = Ast.ExtraIndex;
-const StringPool = @import("StringPool.zig");
 
 source: []const u8,
 token_tags: []const Token.Tag,
@@ -14,7 +13,6 @@ token_spans: []const Token.Span,
 token_index: Token.Index,
 nodes: Node.List,
 extra_data: std.ArrayListUnmanaged(u32),
-string_pool: StringPool,
 scratch: std.ArrayListUnmanaged(Node.Index),
 errors: std.ArrayListUnmanaged(Ast.Error),
 allocator: Allocator,
@@ -50,16 +48,17 @@ pub fn parseRoot(p: *Parser) error{ OutOfMemory, ParseError }!void {
 
 fn parsePackageDecl(p: *Parser) !Node.Index {
     const package = try p.expect(.package);
-    const namespace = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    const namespace = try p.expect(.identifier);
     _ = try p.expect(.@":");
-    const name = try p.intern(p.tokenSlice(try p.expect(.identifier)));
-    const version = try p.parseOptionalVersionSuffix();
+    const name = try p.expect(.identifier);
+    const version, const version_len = try p.parseOptionalVersionSuffix();
     _ = try p.expect(.@";");
 
     const package_id = try p.encode(Node.PackageId{
         .namespace = namespace,
         .name = name,
         .version = version,
+        .version_len = version_len,
     });
     return p.appendNode(.{
         .tag = .package_decl,
@@ -72,12 +71,12 @@ fn parsePackageDecl(p: *Parser) !Node.Index {
 
 fn parseTopLevelUse(p: *Parser) !Node.Index {
     const use = try p.expect(.use);
-    const namespace = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    const namespace = try p.expect(.identifier);
     _ = try p.expect(.@":");
-    const package = try p.intern(p.tokenSlice(try p.expect(.identifier)));
+    const package = try p.expect(.identifier);
     _ = try p.expect(.@"/");
-    const name = try p.intern(p.tokenSlice(try p.expect(.identifier)));
-    const version = try p.parseOptionalVersionSuffix();
+    const name = try p.expect(.identifier);
+    const version, const version_len = try p.parseOptionalVersionSuffix();
     const alias = switch (p.peek()) {
         .as => alias: {
             p.advance();
@@ -92,6 +91,7 @@ fn parseTopLevelUse(p: *Parser) !Node.Index {
         .package = package,
         .name = name,
         .version = version,
+        .version_len = version_len,
     });
     return p.appendNode(.{
         .tag = .top_level_use,
@@ -131,21 +131,17 @@ fn parseWorld(p: *Parser) !Node.Index {
     });
 }
 
-fn parseOptionalVersionSuffix(p: *Parser) !StringPool.OptionalIndex {
-    if (p.peek() != .@"@") return .none;
+fn parseOptionalVersionSuffix(p: *Parser) !struct { Token.OptionalIndex, u32 } {
+    if (p.peek() != .@"@") return .{ .none, 0 };
     p.advance();
 
-    var version = std.ArrayList(u8).init(p.allocator);
-    defer version.deinit();
-
     // TODO: better error reporting for invalid versions
-    try version.appendSlice(p.tokenSlice(try p.expect(.integer)));
+    const first_token_index = @intFromEnum(p.token_index);
+    const first_token = try p.expect(.integer);
     _ = try p.expect(.@".");
-    try version.append('.');
-    try version.appendSlice(p.tokenSlice(try p.expect(.integer)));
+    _ = try p.expect(.integer);
     _ = try p.expect(.@".");
-    try version.append('.');
-    try version.appendSlice(p.tokenSlice(try p.expect(.integer)));
+    _ = try p.expect(.integer);
 
     var seen_prerelease = false;
     var seen_build = false;
@@ -153,13 +149,11 @@ fn parseOptionalVersionSuffix(p: *Parser) !StringPool.OptionalIndex {
         switch (p.peek()) {
             .@"-" => {
                 if (seen_prerelease or seen_build) return p.fail(.invalid_version);
-                try version.append('-');
                 p.advance();
                 seen_prerelease = true;
             },
             .@"+" => {
                 if (seen_build) return p.fail(.invalid_version);
-                try version.append('+');
                 p.advance();
                 seen_prerelease = true;
                 seen_build = true;
@@ -167,18 +161,21 @@ fn parseOptionalVersionSuffix(p: *Parser) !StringPool.OptionalIndex {
             else => break,
         }
         switch (p.peek()) {
-            .identifier, .integer => try version.appendSlice(p.tokenSlice(p.token_index)),
+            .identifier, .integer => {},
             else => return p.fail(.invalid_version),
         }
         while (p.peek() != .@".") {
             switch (p.peek()) {
-                .identifier, .integer => try version.appendSlice(p.tokenSlice(p.token_index)),
+                .identifier, .integer => {},
                 else => return p.fail(.invalid_version),
             }
         }
     }
 
-    return (try p.intern(version.items)).toOptional();
+    return .{
+        first_token.toOptional(),
+        @intFromEnum(p.token_index) - first_token_index,
+    };
 }
 
 fn peek(p: *Parser) Token.Tag {
@@ -223,10 +220,9 @@ fn encode(p: *Parser, value: anytype) !ExtraIndex {
         p.extra_data.appendAssumeCapacity(switch (field.type) {
             u32 => @field(value, field.name),
             inline Token.Index,
+            Token.OptionalIndex,
             Node.Index,
             Node.OptionalIndex,
-            StringPool.Index,
-            StringPool.OptionalIndex,
             => @intFromEnum(@field(value, field.name)),
             else => @compileError("bad field type"),
         });
@@ -239,10 +235,6 @@ fn encodeScratch(p: *Parser, start: usize) !struct { ExtraIndex, u32 } {
     const scratch_items = p.scratch.items[start..];
     try p.extra_data.appendSlice(p.allocator, @ptrCast(p.scratch.items[start..]));
     return .{ index, @intCast(scratch_items.len) };
-}
-
-fn intern(p: *Parser, s: []const u8) !StringPool.Index {
-    return p.string_pool.intern(p.allocator, s);
 }
 
 fn warn(p: *Parser, error_tag: Ast.Error.Tag) !void {
