@@ -9,9 +9,14 @@ world test {
 }
 
 interface my-interface {
+    use random.{one, two};
+    use wasi:io/output-stream.{test};
+
     type my-result = result<u32, stuff>;
 
     resource my-resource;
+
+    do-something: func(len: u32, s: string) -> option<u32>;
 
     enum stuff {
         one,

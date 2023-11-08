@@ -223,6 +223,18 @@ pub const Node = struct {
         /// `data` is `container`.
         /// `main_token` is the `resource` token.
         resource,
+        /// `data` is `use`.
+        /// `main_token` is the `use` token.
+        use,
+        /// `data` is `use_name`.
+        /// `main_token` is the imported name.
+        use_name,
+        /// `data` is `func`.
+        /// `main_token` is the function name.
+        func,
+        /// `data` is `type_reference`.
+        /// `main_token` is the parameter name.
+        param,
         /// An untyped field or case (member of a flags or enum, or an untyped variant case).
         /// `data` is `none`.
         /// `main_token` is the field or case name.
@@ -262,6 +274,9 @@ pub const Node = struct {
         container: Container,
         package_decl: PackageDecl,
         top_level_use: TopLevelUse,
+        use: Use,
+        use_name: UseName,
+        func: Func,
         type_reference: TypeReference,
         unary_type: UnaryType,
         result_type: ResultType,
@@ -285,6 +300,25 @@ pub const Node = struct {
             path: ExtraIndex,
             /// The `as` alias identifier, if any.
             alias: Token.OptionalIndex,
+        };
+
+        pub const Use = struct {
+            /// The use path.
+            /// Type is `UsePath`.
+            path: ExtraIndex,
+            /// The imported names.
+            /// Type is `UseNames`.
+            names: ExtraIndex,
+        };
+
+        pub const UseName = struct {
+            alias: Token.OptionalIndex,
+        };
+
+        pub const Func = struct {
+            /// The function type.
+            /// Type is `FuncType`.
+            type: ExtraIndex,
         };
 
         pub const TypeReference = struct {
@@ -320,6 +354,18 @@ pub const Node = struct {
         version: Token.OptionalIndex,
         version_len: u32,
     };
+
+    pub const UseNames = struct {
+        start: ExtraIndex,
+        len: u32,
+    };
+
+    pub const FuncType = struct {
+        params_start: ExtraIndex,
+        params_len: u32,
+        returns_start: ExtraIndex,
+        returns_len: u32,
+    };
 };
 
 pub const ExtraIndex = enum(u32) { _ };
@@ -338,10 +384,11 @@ pub fn extraData(ast: Ast, comptime T: type, index: ExtraIndex) T {
     inline for (fields, 0..) |field, i| {
         @field(result, field.name) = switch (field.type) {
             u32 => ast.extra_data[@intFromEnum(index) + i],
-            inline Token.Index,
+            Token.Index,
             Token.OptionalIndex,
             Node.Index,
             Node.OptionalIndex,
+            ExtraIndex,
             => @enumFromInt(ast.extra_data[@intFromEnum(index) + i]),
             else => @compileError("bad field type"),
         };
@@ -504,17 +551,7 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
             const top_level_use = node_datas[@intFromEnum(index)].top_level_use;
             const path = ast.extraData(Node.UsePath, top_level_use.path);
             try writer.writeAll("use ");
-            if (path.namespace.unwrap()) |namespace| {
-                try writer.print("{s}:{s}/", .{
-                    ast.tokenSlice(namespace),
-                    ast.tokenSlice(path.package.unwrap().?),
-                });
-            }
-            try writer.writeAll(ast.tokenSlice(path.name));
-            if (path.version.unwrap()) |version| {
-                try writer.writeByte('@');
-                try ast.dumpTokens(version, path.version_len, writer);
-            }
+            try ast.dumpUsePath(path, writer);
             if (top_level_use.alias.unwrap()) |alias| {
                 try writer.print(" as {s}", .{ast.tokenSlice(alias)});
             }
@@ -539,6 +576,52 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
             const type_reference = ast.nodes.items(.data)[@intFromEnum(index)].type_reference;
             try ast.dumpNode(type_reference.type, 0, writer);
             try writer.writeByte('\n');
+        },
+        .use => {
+            try writer.writeAll("use ");
+            const use = ast.nodes.items(.data)[@intFromEnum(index)].use;
+            const path = ast.extraData(Node.UsePath, use.path);
+            try ast.dumpUsePath(path, writer);
+            try writer.writeAll(".{");
+            const names = ast.extraData(Node.UseNames, use.names);
+            for (ast.extraDataNodes(names.start, names.len), 0..) |name_index, i| {
+                if (i > 0) {
+                    try writer.writeAll(", ");
+                }
+                try ast.dumpNode(name_index, 0, writer);
+            }
+            try writer.writeAll("};\n");
+        },
+        .use_name => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            const use_name = ast.nodes.items(.data)[@intFromEnum(index)].use_name;
+            if (use_name.alias.unwrap()) |alias| {
+                try writer.writeAll(": ");
+                assert(ast.tokens.items(.tag)[@intFromEnum(alias)] == .identifier);
+                try writer.writeAll(ast.tokenSlice(alias));
+            }
+        },
+        .func => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": ");
+
+            const func = ast.nodes.items(.data)[@intFromEnum(index)].func;
+            const func_type = ast.extraData(Node.FuncType, func.type);
+            try ast.dumpFuncType(func_type, writer);
+            try writer.writeByte('\n');
+        },
+        .param => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": ");
+
+            const type_reference = ast.nodes.items(.data)[@intFromEnum(index)].type_reference;
+            try ast.dumpNode(type_reference.type, 0, writer);
         },
         .untyped_field => {
             const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
@@ -622,6 +705,42 @@ fn dumpContainer(ast: Ast, @"type": []const u8, index: Node.Index, indent: u32, 
     for (ast.extraDataNodes(container.start, container.len)) |item_index| {
         try ast.dumpNode(item_index, indent + 2, writer);
     }
+}
+
+fn dumpUsePath(ast: Ast, path: Node.UsePath, writer: anytype) !void {
+    if (path.namespace.unwrap()) |namespace| {
+        try writer.print("{s}:{s}/", .{
+            ast.tokenSlice(namespace),
+            ast.tokenSlice(path.package.unwrap().?),
+        });
+    }
+    try writer.writeAll(ast.tokenSlice(path.name));
+    if (path.version.unwrap()) |version| {
+        try writer.writeByte('@');
+        try ast.dumpTokens(version, path.version_len, writer);
+    }
+}
+
+fn dumpFuncType(ast: Ast, func_type: Node.FuncType, writer: anytype) !void {
+    try writer.writeAll("func (");
+    for (ast.extraDataNodes(func_type.params_start, func_type.params_len), 0..) |param_index, i| {
+        if (i > 0) {
+            try writer.writeAll(", ");
+        }
+        try ast.dumpNode(param_index, 0, writer);
+    }
+    try writer.writeByte(')');
+
+    if (func_type.returns_len == 0) return;
+    try writer.writeAll(" -> ");
+    if (func_type.returns_len > 1) try writer.writeByte('(');
+    for (ast.extraDataNodes(func_type.returns_start, func_type.returns_len), 0..) |return_index, i| {
+        if (i > 0) {
+            try writer.writeAll(", ");
+        }
+        try ast.dumpNode(return_index, 0, writer);
+    }
+    if (func_type.returns_len > 1) try writer.writeByte(')');
 }
 
 fn dumpTokens(ast: Ast, index: Token.Index, len: u32, writer: anytype) !void {

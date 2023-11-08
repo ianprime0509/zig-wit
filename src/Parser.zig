@@ -72,18 +72,7 @@ fn parsePackageDecl(p: *Parser) !Node.Index {
 
 fn parseTopLevelUse(p: *Parser) !Node.Index {
     const use = try p.expect(.use);
-    const namespace, const package, const name = parts: {
-        const initial = try p.expect(.identifier);
-        if (p.peek() != .@":") {
-            break :parts .{ .none, .none, initial };
-        }
-        p.advance();
-        const package = try p.expect(.identifier);
-        _ = try p.expect(.@"/");
-        const name = try p.expect(.identifier);
-        break :parts .{ initial.toOptional(), package.toOptional(), name };
-    };
-    const version, const version_len = try p.parseOptionalVersionSuffix();
+    const path = try p.parseUsePath();
     const alias = switch (p.peek()) {
         .as => alias: {
             p.advance();
@@ -93,13 +82,6 @@ fn parseTopLevelUse(p: *Parser) !Node.Index {
     };
     _ = try p.expect(.@";");
 
-    const path = try p.encode(Node.UsePath{
-        .namespace = namespace,
-        .package = package,
-        .name = name,
-        .version = version,
-        .version_len = version_len,
-    });
     return p.appendNode(.{
         .tag = .top_level_use,
         .main_token = use,
@@ -163,7 +145,21 @@ fn parseInterface(p: *Parser) !Node.Index {
             .flags => try p.scratch.append(p.allocator, try p.parseFlags()),
             .@"enum" => try p.scratch.append(p.allocator, try p.parseEnum()),
             .resource => try p.scratch.append(p.allocator, try p.parseResource()),
-            else => return p.fail(.expected_interface_item), // TODO
+            .use => try p.scratch.append(p.allocator, try p.parseUse()),
+            .identifier => {
+                const name = p.next();
+                _ = try p.expect(.@":");
+                const func_type = try p.parseFuncType();
+                _ = try p.expect(.@";");
+                try p.scratch.append(p.allocator, try p.appendNode(.{
+                    .tag = .func,
+                    .main_token = name,
+                    .data = .{ .func = .{
+                        .type = func_type,
+                    } },
+                }));
+            },
+            else => return p.fail(.expected_interface_item),
         }
     }
 
@@ -417,6 +413,146 @@ fn parseResource(p: *Parser) !Node.Index {
     });
 }
 
+fn parseUse(p: *Parser) !Node.Index {
+    const use = try p.expect(.use);
+    const path = try p.parseUsePath();
+    _ = try p.expect(.@".");
+    _ = try p.expect(.@"{");
+
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    while (p.peek() != .@"}") {
+        const name = try p.expect(.identifier);
+        const alias = if (p.peek() == .@":") alias: {
+            p.advance();
+            break :alias (try p.expect(.identifier)).toOptional();
+        } else .none;
+        try p.scratch.append(p.allocator, try p.appendNode(.{
+            .tag = .use_name,
+            .main_token = name,
+            .data = .{ .use_name = .{
+                .alias = alias,
+            } },
+        }));
+
+        if (p.peek() == .@",") {
+            p.advance();
+        } else {
+            break;
+        }
+    }
+    _ = try p.expect(.@"}");
+    _ = try p.expect(.@";");
+
+    const names_start, const names_len = try p.encodeScratch(scratch_top);
+    return p.appendNode(.{
+        .tag = .use,
+        .main_token = use,
+        .data = .{ .use = .{
+            .path = path,
+            .names = try p.encode(Node.UseNames{
+                .start = names_start,
+                .len = names_len,
+            }),
+        } },
+    });
+}
+
+fn parseUsePath(p: *Parser) !ExtraIndex {
+    const namespace, const package, const name = parts: {
+        const initial = try p.expect(.identifier);
+        if (p.peek() != .@":") {
+            break :parts .{ .none, .none, initial };
+        }
+        p.advance();
+        const package = try p.expect(.identifier);
+        _ = try p.expect(.@"/");
+        const name = try p.expect(.identifier);
+        break :parts .{ initial.toOptional(), package.toOptional(), name };
+    };
+    const version, const version_len = try p.parseOptionalVersionSuffix();
+    return p.encode(Node.UsePath{
+        .namespace = namespace,
+        .package = package,
+        .name = name,
+        .version = version,
+        .version_len = version_len,
+    });
+}
+
+fn parseFuncType(p: *Parser) !ExtraIndex {
+    _ = try p.expect(.func);
+
+    const params_start, const params_len = params: {
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        _ = try p.expect(.@"(");
+        while (p.peek() != .@")") {
+            const name = try p.expect(.identifier);
+            _ = try p.expect(.@":");
+            const @"type" = try p.parseType();
+            try p.scratch.append(p.allocator, try p.appendNode(.{
+                .tag = .param,
+                .main_token = name,
+                .data = .{ .type_reference = .{
+                    .type = @"type",
+                } },
+            }));
+
+            if (p.peek() == .@",") {
+                p.advance();
+            } else {
+                break;
+            }
+        }
+        _ = try p.expect(.@")");
+
+        break :params try p.encodeScratch(scratch_top);
+    };
+
+    const returns_start, const returns_len = returns: {
+        if (p.peek() != .@"->") {
+            // No returns
+            break :returns .{ undefined, 0 };
+        }
+        p.advance();
+
+        if (p.peek() != .@"(") {
+            // Single return
+            const scratch_top = p.scratch.items.len;
+            defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+            try p.scratch.append(p.allocator, try p.parseType());
+            break :returns try p.encodeScratch(scratch_top);
+        }
+        p.advance();
+
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+        while (p.peek() != .@")") {
+            try p.scratch.append(p.allocator, try p.parseType());
+
+            if (p.peek() == .@",") {
+                p.advance();
+            } else {
+                break;
+            }
+        }
+        _ = try p.expect(.@")");
+
+        break :returns try p.encodeScratch(scratch_top);
+    };
+
+    return p.encode(Node.FuncType{
+        .params_start = params_start,
+        .params_len = params_len,
+        .returns_start = returns_start,
+        .returns_len = returns_len,
+    });
+}
+
 fn parseType(p: *Parser) !Node.Index {
     switch (p.peek()) {
         .u8,
@@ -444,11 +580,7 @@ fn parseType(p: *Parser) !Node.Index {
 
             const scratch_top = p.scratch.items.len;
             defer p.scratch.shrinkRetainingCapacity(scratch_top);
-            while (true) {
-                if (p.peek() == .@">") {
-                    p.advance();
-                    break;
-                }
+            while (p.peek() != .@">") {
                 try p.scratch.append(p.allocator, try p.parseType());
                 if (p.peek() == .@",") {
                     p.advance();
@@ -456,6 +588,7 @@ fn parseType(p: *Parser) !Node.Index {
                     break;
                 }
             }
+            _ = try p.expect(.@">");
 
             const start, const len = try p.encodeScratch(scratch_top);
             return p.appendNode(.{
@@ -633,10 +766,11 @@ fn encode(p: *Parser, value: anytype) !ExtraIndex {
     inline for (fields) |field| {
         p.extra_data.appendAssumeCapacity(switch (field.type) {
             u32 => @field(value, field.name),
-            inline Token.Index,
+            Token.Index,
             Token.OptionalIndex,
             Node.Index,
             Node.OptionalIndex,
+            ExtraIndex,
             => @intFromEnum(@field(value, field.name)),
             else => @compileError("bad field type"),
         });
