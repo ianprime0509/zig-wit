@@ -16,6 +16,12 @@ interface my-interface {
 
     resource my-resource;
 
+    resource other-resource {
+        constructor(bytes: list<u8>);
+        f: func();
+        g: static func(a: s8);
+    }
+
     do-something: func(len: u32, s: string) -> option<u32>;
 
     enum stuff {

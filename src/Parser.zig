@@ -398,7 +398,37 @@ fn parseResource(p: *Parser) !Node.Index {
                 p.advance();
                 break;
             },
-            else => return p.fail(.expected_resource_method), // TODO
+            .identifier => {
+                const name = p.next();
+                _ = try p.expect(.@":");
+                const tag: Node.Tag = if (p.peek() == .static) tag: {
+                    p.advance();
+                    break :tag .static_func;
+                } else .func;
+                const func_type = try p.parseFuncType();
+                _ = try p.expect(.@";");
+                try p.scratch.append(p.allocator, try p.appendNode(.{
+                    .tag = tag,
+                    .main_token = name,
+                    .data = .{ .func = .{
+                        .type = func_type,
+                    } },
+                }));
+            },
+            .constructor => {
+                const constructor = p.next();
+                const params_start, const params_len = try p.parseParams();
+                _ = try p.expect(.@";");
+                try p.scratch.append(p.allocator, try p.appendNode(.{
+                    .tag = .constructor,
+                    .main_token = constructor,
+                    .data = .{ .constructor = .{
+                        .params_start = params_start,
+                        .params_len = params_len,
+                    } },
+                }));
+            },
+            else => return p.fail(.expected_resource_method),
         }
     }
 
@@ -483,33 +513,7 @@ fn parseUsePath(p: *Parser) !ExtraIndex {
 fn parseFuncType(p: *Parser) !ExtraIndex {
     _ = try p.expect(.func);
 
-    const params_start, const params_len = params: {
-        const scratch_top = p.scratch.items.len;
-        defer p.scratch.shrinkRetainingCapacity(scratch_top);
-
-        _ = try p.expect(.@"(");
-        while (p.peek() != .@")") {
-            const name = try p.expect(.identifier);
-            _ = try p.expect(.@":");
-            const @"type" = try p.parseType();
-            try p.scratch.append(p.allocator, try p.appendNode(.{
-                .tag = .param,
-                .main_token = name,
-                .data = .{ .type_reference = .{
-                    .type = @"type",
-                } },
-            }));
-
-            if (p.peek() == .@",") {
-                p.advance();
-            } else {
-                break;
-            }
-        }
-        _ = try p.expect(.@")");
-
-        break :params try p.encodeScratch(scratch_top);
-    };
+    const params_start, const params_len = try p.parseParams();
 
     const returns_start, const returns_len = returns: {
         if (p.peek() != .@"->") {
@@ -551,6 +555,34 @@ fn parseFuncType(p: *Parser) !ExtraIndex {
         .returns_start = returns_start,
         .returns_len = returns_len,
     });
+}
+
+fn parseParams(p: *Parser) !struct { ExtraIndex, u32 } {
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+    _ = try p.expect(.@"(");
+    while (p.peek() != .@")") {
+        const name = try p.expect(.identifier);
+        _ = try p.expect(.@":");
+        const @"type" = try p.parseType();
+        try p.scratch.append(p.allocator, try p.appendNode(.{
+            .tag = .param,
+            .main_token = name,
+            .data = .{ .type_reference = .{
+                .type = @"type",
+            } },
+        }));
+
+        if (p.peek() == .@",") {
+            p.advance();
+        } else {
+            break;
+        }
+    }
+    _ = try p.expect(.@")");
+
+    return p.encodeScratch(scratch_top);
 }
 
 fn parseType(p: *Parser) !Node.Index {

@@ -61,6 +61,7 @@ pub const Token = struct {
         package,
         include,
         as,
+        constructor,
 
         @"_",
         u8,
@@ -117,6 +118,7 @@ pub const Token = struct {
             .{ "package", .package },
             .{ "include", .include },
             .{ "as", .as },
+            .{ "constructor", .constructor },
             .{ "u8", .u8 },
             .{ "u16", .u16 },
             .{ "u32", .u32 },
@@ -232,6 +234,12 @@ pub const Node = struct {
         /// `data` is `func`.
         /// `main_token` is the function name.
         func,
+        /// `data` is `func`.
+        /// `main_token` is the function name.
+        static_func,
+        /// `data` is `constructor`.
+        /// `main_token` is the `constructor` token.
+        constructor,
         /// `data` is `type_reference`.
         /// `main_token` is the parameter name.
         param,
@@ -277,6 +285,7 @@ pub const Node = struct {
         use: Use,
         use_name: UseName,
         func: Func,
+        constructor: Constructor,
         type_reference: TypeReference,
         unary_type: UnaryType,
         result_type: ResultType,
@@ -319,6 +328,13 @@ pub const Node = struct {
             /// The function type.
             /// Type is `FuncType`.
             type: ExtraIndex,
+        };
+
+        pub const Constructor = struct {
+            /// The start of parameters.
+            params_start: ExtraIndex,
+            /// The number of parameters.
+            params_len: u32,
         };
 
         pub const TypeReference = struct {
@@ -614,6 +630,28 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
             try ast.dumpFuncType(func_type, writer);
             try writer.writeByte('\n');
         },
+        .static_func => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": static ");
+
+            const func = ast.nodes.items(.data)[@intFromEnum(index)].func;
+            const func_type = ast.extraData(Node.FuncType, func.type);
+            try ast.dumpFuncType(func_type, writer);
+            try writer.writeByte('\n');
+        },
+        .constructor => {
+            try writer.writeAll("constructor(");
+            const constructor = ast.nodes.items(.data)[@intFromEnum(index)].constructor;
+            for (ast.extraDataNodes(constructor.params_start, constructor.params_len), 0..) |param_index, i| {
+                if (i > 0) {
+                    try writer.writeAll(", ");
+                }
+                try ast.dumpNode(param_index, 0, writer);
+            }
+            try writer.writeAll(")\n");
+        },
         .param => {
             const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
             assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
@@ -722,7 +760,7 @@ fn dumpUsePath(ast: Ast, path: Node.UsePath, writer: anytype) !void {
 }
 
 fn dumpFuncType(ast: Ast, func_type: Node.FuncType, writer: anytype) !void {
-    try writer.writeAll("func (");
+    try writer.writeAll("func(");
     for (ast.extraDataNodes(func_type.params_start, func_type.params_len), 0..) |param_index, i| {
         if (i > 0) {
             try writer.writeAll(", ");
