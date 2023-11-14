@@ -62,6 +62,7 @@ pub const Token = struct {
         include,
         as,
         constructor,
+        with,
 
         @"_",
         u8,
@@ -119,6 +120,7 @@ pub const Token = struct {
             .{ "include", .include },
             .{ "as", .as },
             .{ "constructor", .constructor },
+            .{ "with", .with },
             .{ "u8", .u8 },
             .{ "u16", .u16 },
             .{ "u32", .u32 },
@@ -204,6 +206,30 @@ pub const Node = struct {
         /// `data` is `container`.
         /// `main_token` is the `world` token.
         world,
+        /// `data` is `func`.
+        /// `main_token` is the `export` token.
+        export_func,
+        /// `data` is `container`.
+        /// `main_token` is the `export` token.
+        export_interface,
+        /// `data` is `path`.
+        /// `main_token` is the `export` token.
+        export_path,
+        /// `data` is `func`.
+        /// `main_token` is the `import` token.
+        import_func,
+        /// `data` is `container`.
+        /// `main_token` is the `import` token.
+        import_interface,
+        /// `data` is `path`.
+        /// `main_token` is the `import` token.
+        import_path,
+        /// `data` is `include`.
+        /// `main_token` is the `include` token.
+        include,
+        /// `data` is `include_name`.
+        /// `main_token` is the included name.
+        include_name,
         /// `data` is `container`.
         /// `main_token` is the `interface` token.
         interface,
@@ -282,6 +308,9 @@ pub const Node = struct {
         container: Container,
         package_decl: PackageDecl,
         top_level_use: TopLevelUse,
+        path: Path,
+        include: Include,
+        include_name: IncludeName,
         use: Use,
         use_name: UseName,
         func: Func,
@@ -309,6 +338,25 @@ pub const Node = struct {
             path: ExtraIndex,
             /// The `as` alias identifier, if any.
             alias: Token.OptionalIndex,
+        };
+
+        pub const Path = struct {
+            /// The path.
+            /// Type is `UsePath`.
+            path: ExtraIndex,
+        };
+
+        pub const Include = struct {
+            /// The included path.
+            /// Type is `UsePath`.
+            path: ExtraIndex,
+            /// The included names.
+            /// Type is `IncludeNames`.
+            names: ExtraIndex,
+        };
+
+        pub const IncludeName = struct {
+            alias: Token.Index,
         };
 
         pub const Use = struct {
@@ -369,6 +417,11 @@ pub const Node = struct {
         name: Token.Index,
         version: Token.OptionalIndex,
         version_len: u32,
+    };
+
+    pub const IncludeNames = struct {
+        start: ExtraIndex,
+        len: u32,
     };
 
     pub const UseNames = struct {
@@ -580,7 +633,109 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
         .variant,
         .@"enum",
         .resource,
-        => |tag| try ast.dumpContainer(@tagName(tag), index, indent, writer),
+        => |tag| {
+            try writer.writeAll(@tagName(tag));
+            try writer.writeByte(' ');
+            const type_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            const name: Token.Index = @enumFromInt(@intFromEnum(type_token) + 1);
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeByte('\n');
+
+            const container = ast.nodes.items(.data)[@intFromEnum(index)].container;
+            for (ast.extraDataNodes(container.start, container.len)) |item_index| {
+                try ast.dumpNode(item_index, indent + 2, writer);
+            }
+        },
+        .export_func => {
+            try writer.writeAll("export ");
+            const export_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            const name: Token.Index = @enumFromInt(@intFromEnum(export_token) + 1);
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": ");
+
+            const func = ast.nodes.items(.data)[@intFromEnum(index)].func;
+            try ast.dumpFuncType(ast.extraData(Node.FuncType, func.type), writer);
+            try writer.writeByte('\n');
+        },
+        .export_interface => {
+            try writer.writeAll("export ");
+            const export_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            const name: Token.Index = @enumFromInt(@intFromEnum(export_token) + 1);
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": interface\n");
+
+            const container = ast.nodes.items(.data)[@intFromEnum(index)].container;
+            for (ast.extraDataNodes(container.start, container.len)) |item_index| {
+                try ast.dumpNode(item_index, indent + 2, writer);
+            }
+        },
+        .export_path => {
+            try writer.writeAll("export ");
+            const path = ast.nodes.items(.data)[@intFromEnum(index)].path;
+            try ast.dumpUsePath(ast.extraData(Node.UsePath, path.path), writer);
+            try writer.writeByte('\n');
+        },
+        .import_func => {
+            try writer.writeAll("import ");
+            const import_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            const name: Token.Index = @enumFromInt(@intFromEnum(import_token) + 1);
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": ");
+
+            const func = ast.nodes.items(.data)[@intFromEnum(index)].func;
+            try ast.dumpFuncType(ast.extraData(Node.FuncType, func.type), writer);
+            try writer.writeByte('\n');
+        },
+        .import_interface => {
+            try writer.writeAll("import ");
+            const import_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            const name: Token.Index = @enumFromInt(@intFromEnum(import_token) + 1);
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            try writer.writeAll(": interface\n");
+
+            const container = ast.nodes.items(.data)[@intFromEnum(index)].container;
+            for (ast.extraDataNodes(container.start, container.len)) |item_index| {
+                try ast.dumpNode(item_index, indent + 2, writer);
+            }
+        },
+        .import_path => {
+            try writer.writeAll("import ");
+            const path = ast.nodes.items(.data)[@intFromEnum(index)].path;
+            try ast.dumpUsePath(ast.extraData(Node.UsePath, path.path), writer);
+            try writer.writeByte('\n');
+        },
+        .include => {
+            try writer.writeAll("include ");
+            const include = ast.nodes.items(.data)[@intFromEnum(index)].include;
+            try ast.dumpUsePath(ast.extraData(Node.UsePath, include.path), writer);
+            const names = ast.extraData(Node.IncludeNames, include.names);
+            if (names.len > 0) {
+                try writer.writeAll(" with {");
+                for (ast.extraDataNodes(names.start, names.len), 0..) |name_index, i| {
+                    if (i > 0) {
+                        try writer.writeAll(", ");
+                    }
+                    try ast.dumpNode(name_index, 0, writer);
+                }
+                try writer.writeByte('}');
+            }
+            try writer.writeByte('\n');
+        },
+        .include_name => {
+            const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
+            assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(name));
+            const include_name = ast.nodes.items(.data)[@intFromEnum(index)].include_name;
+            const alias = include_name.alias;
+            try writer.writeAll(": ");
+            assert(ast.tokens.items(.tag)[@intFromEnum(alias)] == .identifier);
+            try writer.writeAll(ast.tokenSlice(alias));
+        },
         .type_alias => {
             try writer.writeAll("type ");
             const type_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
@@ -596,8 +751,7 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
         .use => {
             try writer.writeAll("use ");
             const use = ast.nodes.items(.data)[@intFromEnum(index)].use;
-            const path = ast.extraData(Node.UsePath, use.path);
-            try ast.dumpUsePath(path, writer);
+            try ast.dumpUsePath(ast.extraData(Node.UsePath, use.path), writer);
             try writer.writeAll(".{");
             const names = ast.extraData(Node.UseNames, use.names);
             for (ast.extraDataNodes(names.start, names.len), 0..) |name_index, i| {
@@ -727,21 +881,6 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
             try ast.dumpNode(unary_type.child_type, 0, writer);
             try writer.writeByte('>');
         },
-    }
-}
-
-fn dumpContainer(ast: Ast, @"type": []const u8, index: Node.Index, indent: u32, writer: anytype) @TypeOf(writer).Error!void {
-    try writer.writeAll(@"type");
-    try writer.writeByte(' ');
-    const type_token = ast.nodes.items(.main_token)[@intFromEnum(index)];
-    const name: Token.Index = @enumFromInt(@intFromEnum(type_token) + 1);
-    assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
-    try writer.writeAll(ast.tokenSlice(name));
-    try writer.writeByte('\n');
-
-    const container = ast.nodes.items(.data)[@intFromEnum(index)].container;
-    for (ast.extraDataNodes(container.start, container.len)) |item_index| {
-        try ast.dumpNode(item_index, indent + 2, writer);
     }
 }
 

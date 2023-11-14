@@ -105,13 +105,16 @@ fn parseWorld(p: *Parser) !Node.Index {
                 p.advance();
                 break;
             },
+            .@"export" => try p.scratch.append(p.allocator, try p.parseExport()),
+            .import => try p.scratch.append(p.allocator, try p.parseImport()),
+            .include => try p.scratch.append(p.allocator, try p.parseInclude()),
             .type => try p.scratch.append(p.allocator, try p.parseTypeAlias()),
             .variant => try p.scratch.append(p.allocator, try p.parseVariant()),
             .record => try p.scratch.append(p.allocator, try p.parseRecord()),
             .flags => try p.scratch.append(p.allocator, try p.parseFlags()),
             .@"enum" => try p.scratch.append(p.allocator, try p.parseEnum()),
             .resource => try p.scratch.append(p.allocator, try p.parseResource()),
-            else => return p.fail(.expected_world_item), // TODO
+            else => return p.fail(.expected_world_item),
         }
     }
 
@@ -126,9 +129,159 @@ fn parseWorld(p: *Parser) !Node.Index {
     });
 }
 
+fn parseExport(p: *Parser) !Node.Index {
+    const @"export" = try p.expect(.@"export");
+
+    const backtrack_index = p.token_index;
+    export_type: {
+        _ = p.eat(.identifier) orelse break :export_type;
+        _ = p.eat(.@":") orelse break :export_type;
+        switch (p.peek()) {
+            .func => {
+                const func_type = try p.parseFuncType();
+                _ = try p.expect(.@";");
+                return p.appendNode(.{
+                    .tag = .export_func,
+                    .main_token = @"export",
+                    .data = .{ .func = .{
+                        .type = func_type,
+                    } },
+                });
+            },
+            .interface => {
+                p.advance();
+                const start, const len = try p.parseInterfaceItems();
+                return p.appendNode(.{
+                    .tag = .export_interface,
+                    .main_token = @"export",
+                    .data = .{ .container = .{
+                        .start = start,
+                        .len = len,
+                    } },
+                });
+            },
+            else => break :export_type,
+        }
+    }
+    p.token_index = backtrack_index;
+
+    const path = try p.parseUsePath();
+    return p.appendNode(.{
+        .tag = .export_path,
+        .main_token = @"export",
+        .data = .{ .path = .{
+            .path = path,
+        } },
+    });
+}
+
+fn parseImport(p: *Parser) !Node.Index {
+    const import = try p.expect(.import);
+
+    const backtrack_index = p.token_index;
+    import_type: {
+        _ = p.eat(.identifier) orelse break :import_type;
+        _ = p.eat(.@":") orelse break :import_type;
+        switch (p.peek()) {
+            .func => {
+                const func_type = try p.parseFuncType();
+                _ = try p.expect(.@";");
+                return p.appendNode(.{
+                    .tag = .import_func,
+                    .main_token = import,
+                    .data = .{ .func = .{
+                        .type = func_type,
+                    } },
+                });
+            },
+            .interface => {
+                p.advance();
+                const start, const len = try p.parseInterfaceItems();
+                return p.appendNode(.{
+                    .tag = .import_interface,
+                    .main_token = import,
+                    .data = .{ .container = .{
+                        .start = start,
+                        .len = len,
+                    } },
+                });
+            },
+            else => break :import_type,
+        }
+    }
+    p.token_index = backtrack_index;
+
+    const path = try p.parseUsePath();
+    return p.appendNode(.{
+        .tag = .import_path,
+        .main_token = import,
+        .data = .{ .path = .{
+            .path = path,
+        } },
+    });
+}
+
+fn parseInclude(p: *Parser) !Node.Index {
+    const include = try p.expect(.include);
+    const path = try p.parseUsePath();
+    const names_start, const names_len = names: {
+        const scratch_top = p.scratch.items.len;
+        defer p.scratch.shrinkRetainingCapacity(scratch_top);
+        if (p.eat(.with) == null) {
+            break :names try p.encodeScratch(scratch_top);
+        }
+        _ = try p.expect(.@"{");
+        while (p.peek() != .@"}") {
+            const name = try p.expect(.identifier);
+            _ = try p.expect(.as);
+            const alias = try p.expect(.identifier);
+            try p.scratch.append(p.allocator, try p.appendNode(.{
+                .tag = .include_name,
+                .main_token = name,
+                .data = .{ .include_name = .{
+                    .alias = alias,
+                } },
+            }));
+
+            if (p.peek() == .@",") {
+                p.advance();
+            } else {
+                break;
+            }
+        }
+        _ = try p.expect(.@"}");
+        break :names try p.encodeScratch(scratch_top);
+    };
+    _ = try p.expect(.@";");
+
+    return p.appendNode(.{
+        .tag = .include,
+        .main_token = include,
+        .data = .{ .include = .{
+            .path = path,
+            .names = try p.encode(Node.IncludeNames{
+                .start = names_start,
+                .len = names_len,
+            }),
+        } },
+    });
+}
+
 fn parseInterface(p: *Parser) !Node.Index {
     const interface = try p.expect(.interface);
     _ = try p.expect(.identifier);
+    const start, const len = try p.parseInterfaceItems();
+    return p.appendNode(.{
+        .tag = .interface,
+        .main_token = interface,
+        .data = .{ .container = .{
+            .start = start,
+            .len = len,
+        } },
+    });
+}
+
+fn parseInterfaceItems(p: *Parser) !struct { ExtraIndex, u32 } {
     _ = try p.expect(.@"{");
 
     const scratch_top = p.scratch.items.len;
@@ -163,15 +316,7 @@ fn parseInterface(p: *Parser) !Node.Index {
         }
     }
 
-    const start, const len = try p.encodeScratch(scratch_top);
-    return p.appendNode(.{
-        .tag = .interface,
-        .main_token = interface,
-        .data = .{ .container = .{
-            .start = start,
-            .len = len,
-        } },
-    });
+    return try p.encodeScratch(scratch_top);
 }
 
 fn parseTypeAlias(p: *Parser) !Node.Index {
@@ -761,6 +906,10 @@ fn next(p: *Parser) Token.Index {
     const index = p.token_index;
     p.advance();
     return index;
+}
+
+fn eat(p: *Parser, expected_tag: Token.Tag) ?Token.Index {
+    return if (p.peek() == expected_tag) p.next() else null;
 }
 
 fn expect(p: *Parser, expected_tag: Token.Tag) !Token.Index {
