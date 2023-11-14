@@ -842,49 +842,40 @@ fn parseType(p: *Parser) !Node.Index {
 }
 
 fn parseOptionalVersionSuffix(p: *Parser) !struct { Token.OptionalIndex, u32 } {
-    if (p.peek() != .@"@") return .{ .none, 0 };
-    p.advance();
+    if (p.eat(.@"@") == null) return .{ .none, 0 };
 
-    // TODO: better error reporting for invalid versions
-    const first_token_index = @intFromEnum(p.token_index);
-    const first_token = try p.expect(.integer);
-    _ = try p.expect(.@".");
-    _ = try p.expect(.integer);
-    _ = try p.expect(.@".");
-    _ = try p.expect(.integer);
-
-    var seen_prerelease = false;
-    var seen_build = false;
+    const first_token_index = p.token_index;
+    // First pass: eagerly eat tokens which could be part of a version
     while (true) {
         switch (p.peek()) {
-            .@"-" => {
-                if (seen_prerelease or seen_build) return p.fail(.invalid_version);
+            .identifier,
+            .integer,
+            .@"-",
+            .@"+",
+            => p.advance(),
+            .@"." => {
                 p.advance();
-                seen_prerelease = true;
-            },
-            .@"+" => {
-                if (seen_build) return p.fail(.invalid_version);
-                p.advance();
-                seen_prerelease = true;
-                seen_build = true;
+                // '.' is a special case, since it might be followed by '{' as
+                // part of a 'use'. In this case, the '.' should not be parsed
+                // as part of the version.
+                if (p.peek() == .@"{") {
+                    p.retreat();
+                    break;
+                }
             },
             else => break,
         }
-        switch (p.peek()) {
-            .identifier, .integer => p.advance(),
-            else => return p.fail(.invalid_version),
-        }
-        while (p.eat(.@".") != null) {
-            switch (p.peek()) {
-                .identifier, .integer => p.advance(),
-                else => return p.fail(.invalid_version),
-            }
-        }
     }
+    const version_start = p.token_spans[@intFromEnum(first_token_index)].start;
+    const version_end = p.token_spans[@intFromEnum(p.token_index)].start;
+    _ = std.SemanticVersion.parse(p.source[version_start..version_end]) catch return p.failMsg(.{
+        .tag = .invalid_version,
+        .token = first_token_index,
+    });
 
     return .{
-        first_token.toOptional(),
-        @intFromEnum(p.token_index) - first_token_index,
+        first_token_index.toOptional(),
+        @intFromEnum(p.token_index) - @intFromEnum(first_token_index),
     };
 }
 
@@ -922,6 +913,10 @@ fn tokenSlice(p: Parser, index: Token.Index) []const u8 {
 
 fn advance(p: *Parser) void {
     p.token_index = @enumFromInt(@intFromEnum(p.token_index) + 1);
+}
+
+fn retreat(p: *Parser) void {
+    p.token_index = @enumFromInt(@intFromEnum(p.token_index) - 1);
 }
 
 fn appendNode(p: *Parser, node: Node) !Node.Index {

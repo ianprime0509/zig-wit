@@ -5,10 +5,10 @@ use wasi:io/output-stream;
 use random;
 
 world test {
-
 }
 
 interface my-interface {
+    use wasi:io/poll@0.2.0-rc-2023-11-05.{pollable};
     use random.{one, two};
     use wasi:io/output-stream.{test};
 

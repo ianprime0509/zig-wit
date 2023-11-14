@@ -534,7 +534,7 @@ pub const Error = struct {
         expected_enum_case,
         expected_resource_method,
         expected_type,
-        invalid_version, // TODO: refine this
+        invalid_version,
 
         /// `expected_tag` is populated.
         expected_token,
