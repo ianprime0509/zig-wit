@@ -166,6 +166,7 @@ fn parseExport(p: *Parser) !Node.Index {
     p.token_index = backtrack_index;
 
     const path = try p.parseUsePath();
+    _ = try p.expect(.@";");
     return p.appendNode(.{
         .tag = .export_path,
         .main_token = @"export",
@@ -212,6 +213,7 @@ fn parseImport(p: *Parser) !Node.Index {
     p.token_index = backtrack_index;
 
     const path = try p.parseUsePath();
+    _ = try p.expect(.@";");
     return p.appendNode(.{
         .tag = .import_path,
         .main_token = import,
@@ -341,12 +343,8 @@ fn parseRecord(p: *Parser) !Node.Index {
 
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
-    while (true) {
+    while (p.peek() != .@"}") {
         switch (p.peek()) {
-            .@"}" => {
-                p.advance();
-                break;
-            },
             .identifier => {
                 const name = p.next();
                 _ = try p.expect(.@":");
@@ -368,6 +366,7 @@ fn parseRecord(p: *Parser) !Node.Index {
             break;
         }
     }
+    _ = try p.expect(.@"}");
 
     const start, const len = try p.encodeScratch(scratch_top);
     return p.appendNode(.{
@@ -387,12 +386,8 @@ fn parseFlags(p: *Parser) !Node.Index {
 
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
-    while (true) {
+    while (p.peek() != .@"}") {
         switch (p.peek()) {
-            .@"}" => {
-                p.advance();
-                break;
-            },
             .identifier => {
                 const name = p.next();
                 try p.scratch.append(p.allocator, try p.appendNode(.{
@@ -410,6 +405,7 @@ fn parseFlags(p: *Parser) !Node.Index {
             break;
         }
     }
+    _ = try p.expect(.@"}");
 
     const start, const len = try p.encodeScratch(scratch_top);
     return p.appendNode(.{
@@ -429,15 +425,11 @@ fn parseVariant(p: *Parser) !Node.Index {
 
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
-    while (true) {
+    while (p.peek() != .@"}") {
         switch (p.peek()) {
-            .@"}" => {
-                p.advance();
-                break;
-            },
             .identifier => {
                 const name = p.next();
-                if (p.peek() == .@"(") {
+                if (p.eat(.@"(") != null) {
                     const @"type" = try p.parseType();
                     _ = try p.expect(.@")");
                     try p.scratch.append(p.allocator, try p.appendNode(.{
@@ -464,6 +456,7 @@ fn parseVariant(p: *Parser) !Node.Index {
             break;
         }
     }
+    _ = try p.expect(.@"}");
 
     const start, const len = try p.encodeScratch(scratch_top);
     return p.appendNode(.{
@@ -483,12 +476,8 @@ fn parseEnum(p: *Parser) !Node.Index {
 
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
-    while (true) {
+    while (p.peek() != .@"}") {
         switch (p.peek()) {
-            .@"}" => {
-                p.advance();
-                break;
-            },
             .identifier => {
                 const name = p.next();
                 try p.scratch.append(p.allocator, try p.appendNode(.{
@@ -506,6 +495,7 @@ fn parseEnum(p: *Parser) !Node.Index {
             break;
         }
     }
+    _ = try p.expect(.@"}");
 
     const start, const len = try p.encodeScratch(scratch_top);
     return p.appendNode(.{
@@ -881,12 +871,12 @@ fn parseOptionalVersionSuffix(p: *Parser) !struct { Token.OptionalIndex, u32 } {
             else => break,
         }
         switch (p.peek()) {
-            .identifier, .integer => {},
+            .identifier, .integer => p.advance(),
             else => return p.fail(.invalid_version),
         }
-        while (p.peek() != .@".") {
+        while (p.eat(.@".") != null) {
             switch (p.peek()) {
-                .identifier, .integer => {},
+                .identifier, .integer => p.advance(),
                 else => return p.fail(.invalid_version),
             }
         }

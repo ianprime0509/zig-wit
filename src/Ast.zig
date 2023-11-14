@@ -580,10 +580,32 @@ pub fn renderError(ast: Ast, @"error": Error, writer: anytype) @TypeOf(writer).E
     };
 }
 
+pub const Location = struct {
+    line: usize,
+    column: usize,
+};
+
+pub fn tokenLocation(ast: Ast, index: Token.Index) Location {
+    const start = ast.tokens.items(.span)[@intFromEnum(index)].start;
+    var line: usize = 1;
+    var pos: usize = 0;
+    while (pos < ast.source.len) {
+        const line_end = mem.indexOfScalarPos(u8, ast.source, pos, '\n') orelse ast.source.len;
+        if (start < line_end) {
+            return .{ .line = line, .column = line_end - pos };
+        }
+        line += 1;
+        pos = line_end + 1;
+    }
+    unreachable;
+}
+
 /// Dumps an AST to `writer`, for debugging.
 pub fn dump(ast: Ast, writer: anytype) @TypeOf(writer).Error!void {
     if (ast.errors.len != 0) {
         for (ast.errors) |@"error"| {
+            const location = ast.tokenLocation(@"error".token);
+            try writer.print("{}:{}: ", .{ location.line, location.column });
             try ast.renderError(@"error", writer);
             try writer.writeByte('\n');
         }
