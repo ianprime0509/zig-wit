@@ -11,7 +11,6 @@ pub fn init(source: []const u8) Tokenizer {
 }
 
 pub fn next(t: *Tokenizer) Token {
-    // TODO: validate identifier composition
     var state: enum {
         start,
         @"/",
