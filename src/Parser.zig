@@ -337,7 +337,7 @@ fn parseTypeAlias(p: *Parser) !Node.Index {
 }
 
 fn parseRecord(p: *Parser) !Node.Index {
-    const record = try p.expect(.interface);
+    const record = try p.expect(.record);
     _ = try p.expect(.identifier);
     _ = try p.expect(.@"{");
 
@@ -380,7 +380,7 @@ fn parseRecord(p: *Parser) !Node.Index {
 }
 
 fn parseFlags(p: *Parser) !Node.Index {
-    const flags = try p.expect(.interface);
+    const flags = try p.expect(.flags);
     _ = try p.expect(.identifier);
     _ = try p.expect(.@"{");
 
