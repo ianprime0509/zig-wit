@@ -12,7 +12,6 @@ pub fn init(source: []const u8) Tokenizer {
 
 pub fn next(t: *Tokenizer) Token {
     // TODO: validate identifier composition
-    // TODO: escape identifier with %
     var state: enum {
         start,
         @"/",
@@ -20,6 +19,7 @@ pub fn next(t: *Tokenizer) Token {
         block_comment,
         @"block_comment_*",
         @"-",
+        @"raw_identifier_%",
         identifier,
         integer,
     } = .start;
@@ -27,6 +27,7 @@ pub fn next(t: *Tokenizer) Token {
 
     var c_len: u32 = undefined;
     var start: u32 = t.index;
+    var raw = false;
     var tag: Token.Tag = while (t.index < t.source.len) : (t.index += c_len) {
         c_len = std.unicode.utf8ByteSequenceLength(t.source[t.index]) catch {
             t.index += 1;
@@ -112,6 +113,13 @@ pub fn next(t: *Tokenizer) Token {
                     t.index += c_len;
                     break .@"+";
                 },
+                '%' => {
+                    // The leading '%' is not included in the raw identifier
+                    // span, so that tokenSlice always gives the full, unescaped
+                    // identifier.
+                    start += c_len;
+                    state = .@"raw_identifier_%";
+                },
                 'a'...'z', 'A'...'Z' => state = .identifier,
                 '0'...'9' => state = .integer,
                 else => {
@@ -158,6 +166,16 @@ pub fn next(t: *Tokenizer) Token {
                 },
                 else => break .@"-",
             },
+            .@"raw_identifier_%" => switch (c) {
+                'a'...'z', 'A'...'Z' => {
+                    raw = true;
+                    state = .identifier;
+                },
+                else => {
+                    t.index += c_len;
+                    break .invalid;
+                },
+            },
             .identifier => switch (c) {
                 'a'...'z', 'A'...'Z', '0'...'9', '-' => {},
                 else => break .identifier,
@@ -170,13 +188,13 @@ pub fn next(t: *Tokenizer) Token {
     } else switch (state) {
         .start, .line_comment => .eof,
         .@"/" => .@"/",
-        .block_comment, .@"block_comment_*" => .invalid,
+        .block_comment, .@"block_comment_*", .@"raw_identifier_%" => .invalid,
         .@"-" => .@"-",
         .identifier => .identifier,
         .integer => .integer,
     };
 
-    if (tag == .identifier) {
+    if (tag == .identifier and !raw) {
         tag = Token.Tag.keywords.get(t.source[start..t.index]) orelse .identifier;
     }
 
