@@ -671,7 +671,16 @@ fn parseFuncType(p: *Parser) !ExtraIndex {
         defer p.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (p.peek() != .@")") {
-            try p.scratch.append(p.allocator, try p.parseType());
+            const name = try p.expect(.identifier);
+            _ = try p.expect(.@":");
+            const @"type" = try p.parseType();
+            try p.scratch.append(p.allocator, try p.appendNode(.{
+                .tag = .named_return,
+                .main_token = name,
+                .data = .{ .type_reference = .{
+                    .type = @"type",
+                } },
+            }));
 
             if (p.peek() == .@",") {
                 p.advance();

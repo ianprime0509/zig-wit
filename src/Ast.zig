@@ -269,6 +269,9 @@ pub const Node = struct {
         /// `data` is `type_reference`.
         /// `main_token` is the parameter name.
         param,
+        /// `data` is `type_reference`.
+        /// `main_token` is the return value name.
+        named_return,
         /// An untyped field or case (member of a flags or enum, or an untyped variant case).
         /// `data` is `none`.
         /// `main_token` is the field or case name.
@@ -429,6 +432,9 @@ pub const Node = struct {
         len: u32,
     };
 
+    /// Params all have the tag `param`. A single return may be a type directly
+    /// or have tag `named_return`. If there is more than one return value, all
+    /// must be named.
     pub const FuncType = struct {
         params_start: ExtraIndex,
         params_len: u32,
@@ -828,7 +834,7 @@ fn dumpNode(ast: Ast, index: Node.Index, indent: u32, writer: anytype) @TypeOf(w
             }
             try writer.writeAll(")\n");
         },
-        .param => {
+        .param, .named_return => {
             const name = ast.nodes.items(.main_token)[@intFromEnum(index)];
             assert(ast.tokens.items(.tag)[@intFromEnum(name)] == .identifier);
             try writer.writeAll(ast.tokenSlice(name));
